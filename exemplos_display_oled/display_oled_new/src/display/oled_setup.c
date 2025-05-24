@@ -1,6 +1,6 @@
-#include "oled_setup.h"
+#include "inc/display/oled_setup.h"
 #include "pico/stdlib.h"
-#include "ssd1306_init.h"
+#include "inc/display/ssd1306_init.h"
 #include <string.h>
 
 void setup_display(i2c_inst_t *porta, uint sda, uint scl, uint freq_khz,

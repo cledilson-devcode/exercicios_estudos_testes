@@ -1,4 +1,4 @@
-#include "ssd1306_init.h"
+#include "inc/display/ssd1306_init.h"
 #include <stdlib.h>
 #include <string.h>
 

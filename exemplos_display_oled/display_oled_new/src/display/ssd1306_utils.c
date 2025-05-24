@@ -1,5 +1,5 @@
-#include "ssd1306_utils.h"
-#include "ssd1306_init.h"  // <- ESSENCIAL para declarar corretamente as funções usadas
+#include "inc/display/ssd1306_utils.h"
+#include "inc/display/ssd1306_init.h"  // <- ESSENCIAL para declarar corretamente as funções usadas
 #include <string.h>
 
 

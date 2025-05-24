@@ -91,7 +91,7 @@ bool oled_alert_update(uint8_t *buffer, struct render_area *area, i2c_inst_t *i2
 
     absolute_time_t current_time = get_absolute_time();
     int64_t diff_us = absolute_time_diff_us(alert_state->last_toggle_time, current_time);
-    uint64_t interval_us = (uint64_t)alert_state->interval_ms * 50;
+    uint64_t interval_us = (uint64_t)alert_state->interval_ms * 1000;
 
     bool needs_display_refresh = false;
 
@@ -101,15 +101,17 @@ bool oled_alert_update(uint8_t *buffer, struct render_area *area, i2c_inst_t *i2
         needs_display_refresh = true;
     }
 
-     if (needs_display_refresh) {
+    if (needs_display_refresh) {
         oled_clear(buffer, area);
         if (alert_state->visible) {
             draw_centered_message(buffer, alert_state->line_y_pixel, alert_state->message_active);
-            gpio_put(led_pin, 1); // ACENDE O LED
+            gpio_put(led_pin, 1); // <<< NOVO: Liga o LED
         } else {
-            gpio_put(led_pin, 0); // APAGA O LED
+            // Não desenha nada no display (texto apagado)
+            gpio_put(led_pin, 0); // <<< NOVO: Desliga o LED
         }
         render_on_display(buffer, area);
+        return true;
     }
     return false;
 }

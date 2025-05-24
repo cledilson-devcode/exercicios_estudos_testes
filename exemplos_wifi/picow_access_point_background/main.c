@@ -1,90 +1,84 @@
 /**
- * Projeto: Servidor HTTP com controle de LED via Access Point - Raspberry Pi Pico W
- *
- * Objetivos:
- * - Configurar o Raspberry Pi Pico W como um ponto de acesso (Access Point) Wi-Fi.
- * - Iniciar servidores DHCP e DNS locais para permitir a conexão de dispositivos clientes.
- * - Criar um servidor HTTP embarcado que disponibiliza uma página HTML de controle.
- * - Permitir o controle remoto de um LED conectado ao GPIO 0 através de comandos HTTP.
- *
- * Funcionalidades:
- * - Criação de uma rede Wi-Fi com nome (SSID) e senha definidos no código.
- * - Atribuição automática de IP aos dispositivos conectados via servidor DHCP.
- * - Interface HTML que permite visualizar e alterar o estado do LED (ligado/desligado).
- * - Manipulação direta de pinos GPIO por meio de requisições do navegador.
- * - Finalização controlada do modo Access Point via tecla 'd'.
+ * Projeto: Servidor HTTP com controle de Alerta (Buzzer/Display/LED) via AP - Pico W
  */
 
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
+#include "hardware/i2c.h"  // Para i2c_inst_t
 #include "hardware/gpio.h"
-#include <string.h>
+#include <string.h>        // Para memset, strncmp, strchr, sscanf, snprintf
 
-#include "inc/display/display_app.h"       // Para as funções da nossa aplicação de display
+// Includes para o Display OLED
+#include "inc/display/display_app.h"
+#include "inc/display/ssd1306_i2c.h" // Para ssd1306_buffer_length, struct render_area
+#include "inc/display/oled_messages.h" // Para BlinkingAlertState
 
-// Inclui o cabeçalho que define ssd1306_buffer_length e struct render_area
-// Este provavelmente é "inc/ssd1306_i2c.h" no seu projeto original,
-// ou "inc/ssd1306.h" se você tivesse seguido a refatoração completa.
-#include "inc/display/ssd1306_i2c.h"
-
-// Inclui o cabeçalho que define BlinkingAlertState
-#include "inc/display/oled_messages.h"
-
-#include <string.h>
-
+// Includes para Rede e Servidor HTTP
 #include "pico/cyw43_arch.h"
-
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
-
 #include "dhcpserver.h"
 #include "dnsserver.h"
 
-#include "inc/buzzer.h" 
+// Include para o Buzzer
+#include "inc/buzzer.h"
 
+// --- Definições do Servidor HTTP e Aplicação ---
 #define TCP_PORT 80
 #define DEBUG_printf printf
 #define POLL_TIME_S 5
-#define HTTP_GET "GET"
+#define HTTP_GET "GET "
 #define HTTP_RESPONSE_HEADERS "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: text/html; charset=utf-8\nConnection: close\n\n"
-#define LED_TEST_BODY "<html><body><h1>Hello from Pico.</h1><p>Led is %s</p><p><a href=\"?led=%d\">Turn led %s</a></body></html>"
+#define LED_TEST_BODY "<html><head><title>PicoW Control</title><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head><body><h1>Controle de Alerta PicoW</h1><p>Estado do Alerta (Buzzer/Display/LED): <strong>%s</strong></p><p><a href=\"/?led=1\" role=\"button\">ATIVAR ALERTA</a></p><p><a href=\"/?led=0\" role=\"button\">DESATIVAR ALERTA</a></p></body></html>"
 #define LED_PARAM "led=%d"
-#define LED_TEST "/ledtest"
+#define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s/\n\n"
 
-//Configuração do pino do Led Vermelho
-#define LED_GPIO_VERMELHO 13
-// Configuração do pino do buzzer
+// --- Pinos GPIO ---
 #define BUZZER_PIN 21
 
-#define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s" LED_TEST "\n\n"
+// --- Variáveis Estáticas para o Display OLED ---
+static uint8_t g_oled_buffer[ssd1306_buffer_length];
+static struct render_area g_oled_render_area;
+static BlinkingAlertState g_oled_alert_state;
+static i2c_inst_t* g_i2c_port_display = i2c1;
 
+// --- Estruturas para o Servidor TCP ---
 typedef struct TCP_SERVER_T_ {
     struct tcp_pcb *server_pcb;
     bool complete;
     ip_addr_t gw;
+    char ap_name[32];
 } TCP_SERVER_T;
 
 typedef struct TCP_CONNECT_STATE_T_ {
     struct tcp_pcb *pcb;
     int sent_len;
     char headers[128];
-    char result[256];
+    char result[512];
     int header_len;
     int result_len;
     ip_addr_t *gw;
+    char *ap_name_ptr;
 } TCP_CONNECT_STATE_T;
 
+
+// --- Callbacks e Funções do Servidor TCP ---
 static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
     if (client_pcb) {
-        assert(con_state && con_state->pcb == client_pcb);
+        if (con_state && con_state->pcb != client_pcb) {
+            // Não fazer nada com con_state se não pertencer a este pcb
+        } else if (con_state) {
+             assert(con_state->pcb == client_pcb);
+        }
+
         tcp_arg(client_pcb, NULL);
         tcp_poll(client_pcb, NULL, 0);
         tcp_sent(client_pcb, NULL);
         tcp_recv(client_pcb, NULL);
         tcp_err(client_pcb, NULL);
+
         err_t err = tcp_close(client_pcb);
         if (err != ERR_OK) {
-            DEBUG_printf("close failed %d, calling abort\n", err);
+            DEBUG_printf("tcp_close failed %d, calling abort\n", err);
             tcp_abort(client_pcb);
             close_err = ERR_ABRT;
         }
@@ -105,123 +99,96 @@ static void tcp_server_close(TCP_SERVER_T *state) {
 
 static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
-    DEBUG_printf("tcp_server_sent %u\n", len);
+    if (!con_state) return ERR_OK;
+
     con_state->sent_len += len;
     if (con_state->sent_len >= con_state->header_len + con_state->result_len) {
-        DEBUG_printf("all done\n");
         return tcp_close_client_connection(con_state, pcb, ERR_OK);
     }
     return ERR_OK;
 }
 
-static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
-    int len = 0;
-    if (strncmp(request, LED_TEST, sizeof(LED_TEST) - 1) == 0) {
-        // Get the state of the led
-        bool value;
-        // cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
-        int led_state = value;
+static int server_handle_request(const char *params, char *result, size_t max_result_len) {
+    int http_param_led_value = -1;
 
-        // See if the user changed it
-        if (params) {
-            int led_param = sscanf(params, LED_PARAM, &led_state);
-            if (led_param == 1) {
-                if (led_state) {
-                    // gpio_put(LED_GPIO_VERMELHO, 1);
-
-                    g_play_music_flag = !g_play_music_flag; // Alterna o estado da flag
-                   
-                } else {  
-                    // gpio_put(LED_GPIO_VERMELHO, 0);
-                    g_play_music_flag = !g_play_music_flag;
-                    
-                    
-                }
-            }
-        }
-        // Generate result
-        if (led_state) {
-            len = snprintf(result, max_result_len, LED_TEST_BODY, "ON", 0, "OFF");
-        } else {
-            len = snprintf(result, max_result_len, LED_TEST_BODY, "OFF", 1, "ON");
-        }
+    if (params) {
+        sscanf(params, LED_PARAM, &http_param_led_value);
     }
-    return len;
+
+    if (http_param_led_value == 1) {
+        DEBUG_printf("HTTP Request: ATIVAR Alerta\n");
+        g_play_music_flag = true;
+        display_application_activate_alert();
+        
+    } else if (http_param_led_value == 0) {
+        DEBUG_printf("HTTP Request: DESATIVAR Alerta\n");
+        g_play_music_flag = false;
+        display_application_deactivate_alert();
+        
+    }
+
+    if (g_play_music_flag) {
+        return snprintf(result, max_result_len, LED_TEST_BODY, "ATIVO (EVACUAR)");
+    } else {
+        return snprintf(result, max_result_len, LED_TEST_BODY, "INATIVO (SEGURO)");
+    }
 }
 
-err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
+err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err_in) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
+
     if (!p) {
-        DEBUG_printf("connection closed\n");
         return tcp_close_client_connection(con_state, pcb, ERR_OK);
     }
     assert(con_state && con_state->pcb == pcb);
-    if (p->tot_len > 0) {
-        DEBUG_printf("tcp_server_recv %d err %d\n", p->tot_len, err);
-#if 0
-        for (struct pbuf *q = p; q != NULL; q = q->next) {
-            DEBUG_printf("in: %.*s\n", q->len, q->payload);
-        }
-#endif
-        // Copy the request into the buffer
-        pbuf_copy_partial(p, con_state->headers, p->tot_len > sizeof(con_state->headers) - 1 ? sizeof(con_state->headers) - 1 : p->tot_len, 0);
 
-        // Handle GET request
-        if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
-            char *request = con_state->headers + sizeof(HTTP_GET); // + space
-            char *params = strchr(request, '?');
-            if (params) {
-                if (*params) {
-                    char *space = strchr(request, ' ');
-                    *params++ = 0;
-                    if (space) {
-                        *space = 0;
-                    }
-                } else {
-                    params = NULL;
-                }
+    if (p->tot_len > 0) {
+        char request_buffer[128];
+        memset(request_buffer, 0, sizeof(request_buffer));
+        pbuf_copy_partial(p, request_buffer, p->tot_len > sizeof(request_buffer) - 1 ? sizeof(request_buffer) - 1 : p->tot_len, 0);
+
+        if (strncmp(HTTP_GET, request_buffer, strlen(HTTP_GET)) == 0) {
+            char *request_path = request_buffer + strlen(HTTP_GET);
+            char *params_start = strchr(request_path, '?');
+            char *http_version_start = strstr(request_path, " HTTP/");
+
+            if (http_version_start) {
+                *http_version_start = 0;
             }
 
-            // Generate content
-            con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
-            DEBUG_printf("Request: %s?%s\n", request, params);
-            DEBUG_printf("Result: %d\n", con_state->result_len);
+            char *actual_params = NULL;
+            if (params_start) {
+                *params_start = 0;
+                actual_params = params_start + 1;
+            }
 
-            // Check we had enough buffer space
-            if (con_state->result_len > sizeof(con_state->result) - 1) {
-                DEBUG_printf("Too much result data %d\n", con_state->result_len);
+            con_state->result_len = server_handle_request(actual_params, con_state->result, sizeof(con_state->result));
+
+            if (con_state->result_len > 0) {
+                con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HTTP_RESPONSE_HEADERS,
+                                                 200, con_state->result_len);
+            } else {
+                con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HTTP_RESPONSE_REDIRECT,
+                                                 con_state->ap_name_ptr ? con_state->ap_name_ptr : ipaddr_ntoa(con_state->gw));
+            }
+
+            if (con_state->header_len > sizeof(con_state->headers) - 1) {
+                DEBUG_printf("Header buffer overflow %d\n", con_state->header_len);
                 return tcp_close_client_connection(con_state, pcb, ERR_CLSD);
             }
 
-            // Generate web page
-            if (con_state->result_len > 0) {
-                con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HTTP_RESPONSE_HEADERS,
-                    200, con_state->result_len);
-                if (con_state->header_len > sizeof(con_state->headers) - 1) {
-                    DEBUG_printf("Too much header data %d\n", con_state->header_len);
-                    return tcp_close_client_connection(con_state, pcb, ERR_CLSD);
-                }
-            } else {
-                // Send redirect
-                con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HTTP_RESPONSE_REDIRECT,
-                    ipaddr_ntoa(con_state->gw));
-                DEBUG_printf("Sending redirect %s", con_state->headers);
-            }
-
-            // Send the headers to the client
             con_state->sent_len = 0;
-            err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
-            if (err != ERR_OK) {
-                DEBUG_printf("failed to write header data %d\n", err);
-                return tcp_close_client_connection(con_state, pcb, err);
+            err_t err_write = tcp_write(pcb, con_state->headers, con_state->header_len, TCP_WRITE_FLAG_COPY);
+            if (err_write != ERR_OK) {
+                DEBUG_printf("tcp_write failed for headers: %d\n", err_write);
+                return tcp_close_client_connection(con_state, pcb, err_write);
             }
 
-            // Send the body to the client
-            if (con_state->result_len) {
-                err = tcp_write(pcb, con_state->result, con_state->result_len, 0);
-                if (err != ERR_OK) {
-                    DEBUG_printf("failed to write result data %d\n", err);
-                    return tcp_close_client_connection(con_state, pcb, err);
+            if (con_state->result_len > 0) {
+                err_write = tcp_write(pcb, con_state->result, con_state->result_len, TCP_WRITE_FLAG_COPY);
+                if (err_write != ERR_OK) {
+                    DEBUG_printf("tcp_write failed for body: %d\n", err_write);
+                    return tcp_close_client_connection(con_state, pcb, err_write);
                 }
             }
         }
@@ -233,36 +200,36 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 
 static err_t tcp_server_poll(void *arg, struct tcp_pcb *pcb) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
-    DEBUG_printf("tcp_server_poll_fn\n");
-    return tcp_close_client_connection(con_state, pcb, ERR_OK); // Just disconnect clent?
+    return tcp_close_client_connection(con_state, pcb, ERR_OK);
 }
 
 static void tcp_server_err(void *arg, err_t err) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
     if (err != ERR_ABRT) {
-        DEBUG_printf("tcp_client_err_fn %d\n", err);
-        tcp_close_client_connection(con_state, con_state->pcb, err);
+        DEBUG_printf("tcp_server_err: %d on pcb=%p con_state=%p\n", err, con_state ? (void*)con_state->pcb : NULL, (void*)con_state);
+        if (con_state) {
+             tcp_close_client_connection(con_state, con_state->pcb, err);
+        }
     }
 }
 
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     if (err != ERR_OK || client_pcb == NULL) {
-        DEBUG_printf("failure in accept\n");
+        DEBUG_printf("Failure in accept\n");
         return ERR_VAL;
     }
-    DEBUG_printf("client connected\n");
 
-    // Create the state for the connection
     TCP_CONNECT_STATE_T *con_state = calloc(1, sizeof(TCP_CONNECT_STATE_T));
     if (!con_state) {
-        DEBUG_printf("failed to allocate connect state\n");
+        DEBUG_printf("Failed to allocate connect state\n");
+        tcp_close(client_pcb);
         return ERR_MEM;
     }
-    con_state->pcb = client_pcb; // for checking
+    con_state->pcb = client_pcb;
     con_state->gw = &state->gw;
+    con_state->ap_name_ptr = state->ap_name;
 
-    // setup connection to client
     tcp_arg(client_pcb, con_state);
     tcp_sent(client_pcb, tcp_server_sent);
     tcp_recv(client_pcb, tcp_server_recv);
@@ -272,25 +239,29 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
     return ERR_OK;
 }
 
-static bool tcp_server_open(void *arg, const char *ap_name) {
+static bool tcp_server_open(void *arg, const char *ap_name_param) {
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
-    DEBUG_printf("starting server on port %d\n", TCP_PORT);
+    strncpy(state->ap_name, ap_name_param, sizeof(state->ap_name) -1);
+    state->ap_name[sizeof(state->ap_name) -1] = '\0';
+
+    DEBUG_printf("Starting server on port %d\n", TCP_PORT);
 
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!pcb) {
-        DEBUG_printf("failed to create pcb\n");
+        DEBUG_printf("Failed to create pcb\n");
         return false;
     }
 
     err_t err = tcp_bind(pcb, IP_ANY_TYPE, TCP_PORT);
     if (err) {
-        DEBUG_printf("failed to bind to port %d\n",TCP_PORT);
+        DEBUG_printf("Failed to bind to port %d, error %d\n", TCP_PORT, err);
+        tcp_close(pcb);
         return false;
     }
 
     state->server_pcb = tcp_listen_with_backlog(pcb, 1);
     if (!state->server_pcb) {
-        DEBUG_printf("failed to listen\n");
+        DEBUG_printf("Failed to listen\n");
         if (pcb) {
             tcp_close(pcb);
         }
@@ -300,15 +271,18 @@ static bool tcp_server_open(void *arg, const char *ap_name) {
     tcp_arg(state->server_pcb, state);
     tcp_accept(state->server_pcb, tcp_server_accept);
 
-    printf("Try connecting to '%s' (press 'd' to disable access point)\n", ap_name);
+    printf("Servidor HTTP iniciado. Conecte-se a Wi-Fi '%s' e acesse http://%s\n",
+           ap_name_param, ip4addr_ntoa(&state->gw));
+    printf("(Pressione 'd' no serial para desabilitar o Access Point)\n");
     return true;
 }
 
 void key_pressed_func(void *param) {
-    assert(param);
+    if (!param) return;
     TCP_SERVER_T *state = (TCP_SERVER_T*)param;
-    int key = getchar_timeout_us(0); // get any pending key press but don't wait
+    int key = getchar_timeout_us(0);
     if (key == 'd' || key == 'D') {
+        DEBUG_printf("Tecla 'd' pressionada, desabilitando AP...\n");
         cyw43_arch_lwip_begin();
         cyw43_arch_disable_ap_mode();
         cyw43_arch_lwip_end();
@@ -319,91 +293,86 @@ void key_pressed_func(void *param) {
 int main() {
     stdio_init_all();
 
-    // gpio_init(LED_GPIO_VERMELHO);
-    // gpio_set_dir(LED_GPIO_VERMELHO, GPIO_OUT);
-    // gpio_put(LED_GPIO_VERMELHO, 0);
-
-    // Inicializa o buzzer usando a função do nosso módulo
     buzzer_init(BUZZER_PIN);
+    g_play_music_flag = false;
+
+   
+    if (!display_application_init(g_oled_buffer, &g_oled_render_area, &g_oled_alert_state, g_i2c_port_display)) {
+        DEBUG_printf("ERRO: Falha ao inicializar a aplicacao do display!\n");
+    } else {
+        DEBUG_printf("Aplicacao do display OLED inicializada.\n");
+    }
 
     TCP_SERVER_T *state = calloc(1, sizeof(TCP_SERVER_T));
     if (!state) {
-        DEBUG_printf("failed to allocate state\n");
+        DEBUG_printf("ERRO: Falha ao alocar estado do servidor TCP!\n");
         return 1;
     }
 
     if (cyw43_arch_init()) {
-        DEBUG_printf("failed to initialise\n");
+        DEBUG_printf("ERRO: Falha ao inicializar cyw43_arch!\n");
+        free(state);
         return 1;
     }
+    DEBUG_printf("cyw43_arch inicializado.\n");
 
-    // Get notified if the user presses a key
     stdio_set_chars_available_callback(key_pressed_func, state);
 
-    const char *ap_name = "picow_test_cledilson";
-#if 1
+    const char *ap_name = "PicoW_Alerta";
     const char *password = "12345678";
-#else
-    const char *password = NULL;
-#endif
 
     cyw43_arch_enable_ap_mode(ap_name, password, CYW43_AUTH_WPA2_AES_PSK);
-
-    #if LWIP_IPV6
-    #define IP(x) ((x).u_addr.ip4)
-    #else
-    #define IP(x) (x)
-    #endif
+    DEBUG_printf("Modo Access Point '%s' habilitado.\n", ap_name);
 
     ip4_addr_t mask;
-    IP(state->gw).addr = PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS);
-    IP(mask).addr = PP_HTONL(CYW43_DEFAULT_IP_MASK);
+    ip4_addr_set_u32(&state->gw, PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS));
+    ip4_addr_set_u32(&mask, PP_HTONL(CYW43_DEFAULT_IP_MASK));
 
-    #undef IP
-
-    // Start the dhcp server
     dhcp_server_t dhcp_server;
     dhcp_server_init(&dhcp_server, &state->gw, &mask);
+    DEBUG_printf("Servidor DHCP iniciado.\n");
 
-    // Start the dns server
     dns_server_t dns_server;
     dns_server_init(&dns_server, &state->gw);
+    DEBUG_printf("Servidor DNS iniciado.\n");
 
     if (!tcp_server_open(state, ap_name)) {
-        DEBUG_printf("failed to open server\n");
+        DEBUG_printf("ERRO: Falha ao abrir o servidor TCP!\n");
+        dns_server_deinit(&dns_server);
+        dhcp_server_deinit(&dhcp_server);
+        cyw43_arch_deinit();
+        free(state);
         return 1;
     }
 
     state->complete = false;
-    while(!state->complete) {
+    DEBUG_printf("Loop principal iniciado.\n");
 
+    while(!state->complete) {
         if (g_play_music_flag) {
             buzzer_play(BUZZER_PIN);
-            // Se a música terminou e g_play_music_flag ainda é true, ela vai
-            // ser chamada de novo na próxima iteração do while(1), tocando continuamente.
-            display_application_toggle_alert_state();
-        } 
-        display_application_process();
-        // the following #ifdef is only here so this same example can be used in multiple modes;
-        // you do not need it in your code
+        }
+
+        display_application_process(); // Chamada para atualizar o display
+
+        // ***************************************************************
+        // MODIFICAÇÃO AQUI: Diminuindo o tempo de espera no loop principal
+        // ***************************************************************
 #if PICO_CYW43_ARCH_POLL
-        // if you are using pico_cyw43_arch_poll, then you must poll periodically from your
-        // main loop (not from a timer interrupt) to check for Wi-Fi driver or lwIP work that needs to be done.
         cyw43_arch_poll();
-        // you can poll as often as you like, however if you have nothing else to do you can
-        // choose to sleep until either a specified time, or cyw43_arch_poll() has work to do:
-        cyw43_arch_wait_for_work_until(make_timeout_time_ms(1000));
+        cyw43_arch_wait_for_work_until(make_timeout_time_ms(10)); // Era 100ms
 #else
-        // if you are not using pico_cyw43_arch_poll, then Wi-FI driver and lwIP work
-        // is done via interrupt in the background. This sleep is just an example of some (blocking)
-        // work you might be doing.
-        sleep_ms(1000);
+        sleep_ms(10); // Era 100ms
 #endif
+        // ***************************************************************
     }
+
+    DEBUG_printf("Finalizando aplicacao...\n");
     tcp_server_close(state);
     dns_server_deinit(&dns_server);
     dhcp_server_deinit(&dhcp_server);
     cyw43_arch_deinit();
-    printf("Test complete\n");
+    free(state);
+    printf("Aplicacao finalizada.\n");
     return 0;
 }

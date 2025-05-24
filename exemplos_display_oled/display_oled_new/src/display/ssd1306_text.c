@@ -16,9 +16,9 @@
  * Autor: Orlando (base) + Assistente Virtual (refatoração)
  */
 
-#include "ssd1306_text.h"
-#include "ssd1306_font.h"
-#include "ssd1306_utils.h"  // Para oled_clear e render_on_display
+#include "inc/display/ssd1306_text.h"
+#include "inc/display/ssd1306_font.h"
+#include "inc/display/ssd1306_utils.h"  // Para oled_clear e render_on_display
 #include <ctype.h>
 #include <string.h>
 #include <stdio.h>
@@ -84,11 +84,17 @@ void ssd1306_draw_char(uint8_t *ssd, int16_t x, int16_t y, uint8_t character) {
 // ------------------------------------------------------------
 // Desenha uma string simples (ASCII puro) sem quebra de linha
 // ------------------------------------------------------------
-void ssd1306_draw_string(uint8_t *ssd, int16_t x, int16_t y, char *string) {
-    if (x > ssd1306_width - 8 || y > ssd1306_height - 8) return;
+void ssd1306_draw_string(uint8_t *ssd, int16_t x, int16_t y, const char *string) { // Definição NOVA
+    if (x > ssd1306_width - 8 || y > ssd1306_height - 8) { // Use suas constantes de largura/altura
+        return;
+    }
+
     while (*string) {
-        ssd1306_draw_char(ssd, x, y, *string++);
-        x += 8;
+        // A função ssd1306_draw_char provavelmente espera um 'char' ou 'uint8_t', não 'const char'.
+        // A conversão de *string (que é um const char) para char aqui é segura
+        // porque ssd1306_draw_char opera sobre uma cópia do valor do caractere.
+        ssd1306_draw_char(ssd, x, y, (char)*string++); // Passa o valor do caractere
+        x += 8;  // Ou SSD1306_CHAR_WIDTH
     }
 }
 
