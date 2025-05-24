@@ -10,9 +10,9 @@
 extern volatile bool g_play_music_flag;
 
 // Declaração da função para inicializar o PWM para o buzzer
-void buzzer_init(uint pin);
+void buzzer_music_init(uint pin);
 
 // Declaração da função para tocar a música Star Wars
-void buzzer_play(uint pin);
+void buzzer_music_play_star_wars(uint pin);
 
 #endif // BUZZER_MUSIC_H

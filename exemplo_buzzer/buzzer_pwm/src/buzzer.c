@@ -14,7 +14,7 @@ volatile bool g_play_music_flag = false;
 #define DURATION_DANGER  150  // Duração de cada bip do alerta em ms
 
 // Sequência de notas para o som de alerta
-static const uint danger_alert_notes[] = {
+static const uint star_wars_notes[] = {
     NOTE_DANGER_HIGH, NOTE_DANGER_LOW,
     NOTE_DANGER_HIGH, NOTE_DANGER_LOW,
     NOTE_DANGER_HIGH, NOTE_DANGER_LOW,
@@ -33,9 +33,8 @@ static const uint note_duration[] = {
     DURATION_DANGER * 0, // Duração da pausa (dobro da duração de um bip)
 };
 
-
-// // Notas musicais para a música tema de Star Wars (CORRIGIDO PARA 80 NOTAS)
-// // !!! VERIFIQUE SE ESTAS NOTAS E DURAÇÕES CORRESPONDEM CORRETAMENTE APÓS O TRUNCAMENTO !!!
+// Notas musicais para a música tema de Star Wars (CORRIGIDO PARA 80 NOTAS)
+// !!! VERIFIQUE SE ESTAS NOTAS E DURAÇÕES CORRESPONDEM CORRETAMENTE APÓS O TRUNCAMENTO !!!
 // static const uint star_wars_notes[] = {
 //     330, 330, 330, 262, 392, 523, 330, 262, // 8
 //     392, 523, 330, 659, 659, 659, 698, 523, // 16
@@ -88,7 +87,7 @@ static void play_tone(uint pin, uint frequency, uint duration_ms) {
 }
 
 // Implementação da função pública para inicializar o PWM
-void buzzer_init(uint pin) {
+void buzzer_music_init(uint pin) {
     gpio_set_function(pin, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(pin);
     pwm_config config = pwm_get_default_config();
@@ -99,7 +98,7 @@ void buzzer_init(uint pin) {
 }
 
 // Implementação da função pública para tocar a música
-void buzzer_play(uint pin) {
+void buzzer_music_play_star_wars(uint pin) {
     // --- NOVO: Verificação no início da função ---
     if (!g_play_music_flag) {
         pwm_set_gpio_level(pin, 0); // Garante que o PWM está desligado
@@ -117,11 +116,11 @@ void buzzer_play(uint pin) {
         }
         // --- FIM NOVO ---
 
-        if (i < (sizeof(danger_alert_notes) / sizeof(danger_alert_notes[0]))) {
-            if (danger_alert_notes[i] == 0) {
+        if (i < (sizeof(star_wars_notes) / sizeof(star_wars_notes[0]))) {
+            if (star_wars_notes[i] == 0) {
                 sleep_ms(note_duration[i]);
             } else {
-                play_tone(pin, danger_alert_notes[i], note_duration[i]);
+                play_tone(pin, star_wars_notes[i], note_duration[i]);
             }
         }
     }

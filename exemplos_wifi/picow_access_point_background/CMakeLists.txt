@@ -35,7 +35,21 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(picow_access_point_background main.c dhcpserver/dhcpserver.c dnsserver/dnsserver.c src/buzzer.c)
+add_executable(picow_access_point_background main.c 
+    dhcpserver/dhcpserver.c 
+    dnsserver/dnsserver.c 
+    src/buzzer.c 
+
+    src/display/display_app.c 
+    src/display/ssd1306_init.c
+    src/display/ssd1306_text.c
+    src/display/ssd1306_utils.c
+    src/display/oled_setup.c
+    src/display/oled_messages.c
+
+
+
+)
 
 pico_set_program_name(picow_access_point_background "picow_access_point_background")
 pico_set_program_version(picow_access_point_background "0.1")
@@ -45,7 +59,13 @@ pico_enable_stdio_uart(picow_access_point_background 0)
 pico_enable_stdio_usb(picow_access_point_background 1)
 
 # Add the standard library to the build
-target_link_libraries(picow_access_point_background pico_cyw43_arch_lwip_threadsafe_background pico_stdlib hardware_pwm hardware_clocks)
+target_link_libraries(picow_access_point_background 
+    pico_cyw43_arch_lwip_threadsafe_background 
+    pico_stdlib 
+    hardware_pwm 
+    hardware_clocks
+    hardware_i2c
+)
 
 # Add the standard include files to the build
 target_include_directories(picow_access_point_background PRIVATE
@@ -55,6 +75,11 @@ target_include_directories(picow_access_point_background PRIVATE
 
         ${CMAKE_CURRENT_LIST_DIR}/inc
         ${CMAKE_CURRENT_LIST_DIR}/src
+
+        ${CMAKE_CURRENT_LIST_DIR}/inc/display
+        ${CMAKE_CURRENT_LIST_DIR}/src/display
+
+        
         )
 
 # Add any user requested libraries

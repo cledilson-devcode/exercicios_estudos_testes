@@ -15,10 +15,24 @@
  * - Finalização controlada do modo Access Point via tecla 'd'.
  */
 
+#include "pico/stdlib.h"
+#include "hardware/i2c.h"
+#include "hardware/gpio.h"
+#include <string.h>
+
+#include "inc/display/display_app.h"       // Para as funções da nossa aplicação de display
+
+// Inclui o cabeçalho que define ssd1306_buffer_length e struct render_area
+// Este provavelmente é "inc/ssd1306_i2c.h" no seu projeto original,
+// ou "inc/ssd1306.h" se você tivesse seguido a refatoração completa.
+#include "inc/display/ssd1306_i2c.h"
+
+// Inclui o cabeçalho que define BlinkingAlertState
+#include "inc/display/oled_messages.h"
+
 #include <string.h>
 
 #include "pico/cyw43_arch.h"
-#include "pico/stdlib.h"
 
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
@@ -113,12 +127,12 @@ static int test_server_content(const char *request, const char *params, char *re
             int led_param = sscanf(params, LED_PARAM, &led_state);
             if (led_param == 1) {
                 if (led_state) {
-                    gpio_put(LED_GPIO_VERMELHO, 1);
+                    // gpio_put(LED_GPIO_VERMELHO, 1);
 
                     g_play_music_flag = !g_play_music_flag; // Alterna o estado da flag
                    
                 } else {  
-                    gpio_put(LED_GPIO_VERMELHO, 0);
+                    // gpio_put(LED_GPIO_VERMELHO, 0);
                     g_play_music_flag = !g_play_music_flag;
                     
                     
@@ -305,12 +319,12 @@ void key_pressed_func(void *param) {
 int main() {
     stdio_init_all();
 
-    gpio_init(LED_GPIO_VERMELHO);
-    gpio_set_dir(LED_GPIO_VERMELHO, GPIO_OUT);
-    gpio_put(LED_GPIO_VERMELHO, 0);
+    // gpio_init(LED_GPIO_VERMELHO);
+    // gpio_set_dir(LED_GPIO_VERMELHO, GPIO_OUT);
+    // gpio_put(LED_GPIO_VERMELHO, 0);
 
     // Inicializa o buzzer usando a função do nosso módulo
-    buzzer_music_init(BUZZER_PIN);
+    buzzer_init(BUZZER_PIN);
 
     TCP_SERVER_T *state = calloc(1, sizeof(TCP_SERVER_T));
     if (!state) {
@@ -364,12 +378,12 @@ int main() {
     while(!state->complete) {
 
         if (g_play_music_flag) {
-            buzzer_music_play_star_wars(BUZZER_PIN);
+            buzzer_play(BUZZER_PIN);
             // Se a música terminou e g_play_music_flag ainda é true, ela vai
             // ser chamada de novo na próxima iteração do while(1), tocando continuamente.
-
+            display_application_toggle_alert_state();
         } 
-
+        display_application_process();
         // the following #ifdef is only here so this same example can be used in multiple modes;
         // you do not need it in your code
 #if PICO_CYW43_ARCH_POLL
