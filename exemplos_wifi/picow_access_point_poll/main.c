@@ -34,7 +34,7 @@
 #define LED_TEST_BODY "<html><body><h1>Hello from Pico.</h1><p>Led is %s</p><p><a href=\"?led=%d\">Turn led %s</a></body></html>"
 #define LED_PARAM "led=%d"
 #define LED_TEST "/ledtest"
-#define LED_GPIO 0
+#define LED_GPIO 13
 #define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s" LED_TEST "\n\n"
 
 typedef struct TCP_SERVER_T_ {
@@ -98,7 +98,7 @@ static int test_server_content(const char *request, const char *params, char *re
     if (strncmp(request, LED_TEST, sizeof(LED_TEST) - 1) == 0) {
         // Get the state of the led
         bool value;
-        cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
+        // cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
         int led_state = value;
 
         // See if the user changed it
@@ -106,11 +106,13 @@ static int test_server_content(const char *request, const char *params, char *re
             int led_param = sscanf(params, LED_PARAM, &led_state);
             if (led_param == 1) {
                 if (led_state) {
+                    gpio_put(LED_GPIO, 1);
                     // Turn led on
-                    cyw43_gpio_set(&cyw43_state, LED_GPIO, true);
+                    // cyw43_gpio_set(&cyw43_state, LED_GPIO, true);
                 } else {
+                    gpio_put(LED_GPIO, 0);
                     // Turn led off
-                    cyw43_gpio_set(&cyw43_state, LED_GPIO, false);
+                    // cyw43_gpio_set(&cyw43_state, LED_GPIO, false);
                 }
             }
         }
@@ -293,6 +295,10 @@ void key_pressed_func(void *param) {
 
 int main() {
     stdio_init_all();
+
+    gpio_init(LED_GPIO);
+    gpio_set_dir(LED_GPIO, GPIO_OUT);
+    gpio_put(LED_GPIO, 0);
 
     TCP_SERVER_T *state = calloc(1, sizeof(TCP_SERVER_T));
     if (!state) {
